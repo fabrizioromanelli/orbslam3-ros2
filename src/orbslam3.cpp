@@ -66,6 +66,7 @@ private:
   void irLeft_callback(const sensor_msgs::msg::Image::SharedPtr msg)
   {
     std::lock_guard<std::mutex> lock{mBufMutexLeft};
+    std::cout << "ir" << std::endl;
     if (!imgLeftBuf.empty())
       imgLeftBuf.pop();
     imgLeftBuf.push(msg);
@@ -82,6 +83,7 @@ private:
   void depth_callback(const sensor_msgs::msg::Image::SharedPtr msg)
   {
     std::lock_guard<std::mutex> lock{mBufMutexDepth};
+    std::cout << "depth" << std::endl;
     if (!imgDepthBuf.empty())
       imgDepthBuf.pop();
     imgDepthBuf.push(msg);
@@ -121,12 +123,15 @@ void ORBSLAM3Subscriber::runSLAM()
 
 void ORBSLAM3Subscriber::rgbdSLAM()
 {
+  std::cout << "a" << std::endl;
   const rclcpp::Duration maxTimeDiff(0, 10000000); // 0.01s
   while(true)
   {
+    std::cout << "b" << std::endl;
     rclcpp::Time tImLeft(0), tImDepth(0);
     if (!imgLeftBuf.empty() && !imgDepthBuf.empty())
     {
+      std::cout << "c" << std::endl;
       tImLeft = imgLeftBuf.front()->header.stamp;
       tImDepth = imgDepthBuf.front()->header.stamp;
 
@@ -137,7 +142,7 @@ void ORBSLAM3Subscriber::rgbdSLAM()
         tImDepth = imgDepthBuf.front()->header.stamp;
       }
       lockD.unlock();
-
+std::cout << "d" << std::endl;
       std::unique_lock<std::mutex> lockL{mBufMutexLeft};
       while ((tImDepth-tImLeft) > maxTimeDiff && imgLeftBuf.size() > 1)
       {
@@ -145,13 +150,13 @@ void ORBSLAM3Subscriber::rgbdSLAM()
         tImLeft = imgLeftBuf.front()->header.stamp;
       }
       lockL.unlock();
-
+std::cout << "e" << std::endl;
       if ((tImLeft-tImDepth) > maxTimeDiff || (tImDepth-tImLeft) > maxTimeDiff)
         continue;
-
+std::cout << "f" << std::endl;
       if (tImLeft > imuBuf.back()->header.stamp)
         continue;
-
+std::cout << "g" << std::endl;
       lockL.lock();
       cv_bridge::CvImageConstPtr cv_ptrLeft;
       try
@@ -165,7 +170,7 @@ void ORBSLAM3Subscriber::rgbdSLAM()
       }
       imgLeftBuf.pop();
       lockL.unlock();
-
+std::cout << "h" << std::endl;
       lockD.lock();
       cv_bridge::CvImageConstPtr cv_ptrRight;
       try
@@ -179,9 +184,12 @@ void ORBSLAM3Subscriber::rgbdSLAM()
       }
       imgDepthBuf.pop();
       lockD.unlock();
-
+std::cout << "i" << std::endl;
       mpSLAM->TrackRGBD(cv_ptrLeft->image, cv_ptrRight->image, tImLeft.seconds());
     }
+
+    std::chrono::milliseconds tSleep(1);
+    std::this_thread::sleep_for(tSleep);
   }
 }
 
