@@ -28,15 +28,30 @@ public:
     video_qos.best_effort();
     video_qos.durability_volatile();
 
-    imuSubscription_ = this->create_subscription<sensor_msgs::msg::Imu>(
-      "/camera/imu", 1000, std::bind(&ORBSLAM3Subscriber::imu_callback, this, _1)
-    );
+    if (this->sensorType == ORB_SLAM3::System::IMU_STEREO || this->sensorType == ORB_SLAM3::System::IMU_RGBD)
+    {
+      imuSubscription_ = this->create_subscription<sensor_msgs::msg::Imu>(
+        "/camera/imu", 1000, std::bind(&ORBSLAM3Subscriber::imu_callback, this, _1)
+      );
+    }
+
     irLeftSubscription_ = this->create_subscription<sensor_msgs::msg::Image>(
       "/camera/infra1/image_rect_raw", video_qos, std::bind(&ORBSLAM3Subscriber::irLeft_callback, this, _1)
     );
-    irRightSubscription_ = this->create_subscription<sensor_msgs::msg::Image>(
-      "/camera/infra2/image_rect_raw", video_qos, std::bind(&ORBSLAM3Subscriber::irRight_callback, this, _1)
-    );
+
+    if (this->sensorType == ORB_SLAM3::System::STEREO || this->sensorType == ORB_SLAM3::System::IMU_STEREO)
+    {
+      irRightSubscription_ = this->create_subscription<sensor_msgs::msg::Image>(
+        "/camera/infra2/image_rect_raw", video_qos, std::bind(&ORBSLAM3Subscriber::irRight_callback, this, _1)
+      );
+    }
+
+    if (this->sensorType == ORB_SLAM3::System::RGBD || this->sensorType == ORB_SLAM3::System::IMU_RGBD)
+    {
+      depthSubscription_ = this->create_subscription<sensor_msgs::msg::Image>(
+        "/camera/aligned_depth_to_infra1/image_raw", video_qos, std::bind(&ORBSLAM3Subscriber::depth_callback, this, _1)
+      );
+    }
   }
 
   void runSLAM();
@@ -64,18 +79,31 @@ private:
     imgRightBuf.push(msg);
   }
 
+  void depth_callback(const sensor_msgs::msg::Image::SharedPtr msg)
+  {
+    std::lock_guard<std::mutex> lock{mBufMutexDepth};
+    if (!imgDepthBuf.empty())
+      imgDepthBuf.pop();
+    imgDepthBuf.push(msg);
+  }
+
+  void imuSLAM();
+  void stereoSLAM();
+  void rgbdSLAM();
+
   // Subscriptions
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imuSubscription_;
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr irLeftSubscription_;
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr irRightSubscription_;
+  rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr depthSubscription_;
 
   // Queues
   std::queue<sensor_msgs::msg::Imu::SharedPtr> imuBuf;
-  std::queue<sensor_msgs::msg::Image::SharedPtr> imgLeftBuf, imgRightBuf;
+  std::queue<sensor_msgs::msg::Image::SharedPtr> imgLeftBuf, imgRightBuf, imgDepthBuf;
 
   // Mutex
   std::mutex mBufMutex;
-  std::mutex mBufMutexLeft,mBufMutexRight;
+  std::mutex mBufMutexLeft, mBufMutexRight, mBufMutexDepth;
 
   ORB_SLAM3::System* mpSLAM;
   ORB_SLAM3::System::eSensor sensorType;
@@ -83,7 +111,148 @@ private:
 
 void ORBSLAM3Subscriber::runSLAM()
 {
-  std::cout.precision(17);
+  if (this->sensorType == ORB_SLAM3::System::IMU_STEREO || this->sensorType == ORB_SLAM3::System::IMU_RGBD)
+    imuSLAM();
+  else if (this->sensorType == ORB_SLAM3::System::STEREO)
+    stereoSLAM();
+  else if (this->sensorType == ORB_SLAM3::System::RGBD)
+    rgbdSLAM();
+}
+
+void ORBSLAM3Subscriber::rgbdSLAM()
+{
+  const rclcpp::Duration maxTimeDiff(0, 10000000); // 0.01s
+  while(true)
+  {
+    rclcpp::Time tImLeft(0), tImDepth(0);
+    if (!imgLeftBuf.empty() && !imgDepthBuf.empty())
+    {
+      tImLeft = imgLeftBuf.front()->header.stamp;
+      tImDepth = imgDepthBuf.front()->header.stamp;
+
+      std::unique_lock<std::mutex> lockD{mBufMutexDepth};
+      while ((tImLeft-tImDepth) > maxTimeDiff && imgDepthBuf.size() > 1)
+      {
+        imgDepthBuf.pop();
+        tImDepth = imgDepthBuf.front()->header.stamp;
+      }
+      lockD.unlock();
+
+      std::unique_lock<std::mutex> lockL{mBufMutexLeft};
+      while ((tImDepth-tImLeft) > maxTimeDiff && imgLeftBuf.size() > 1)
+      {
+        imgLeftBuf.pop();
+        tImLeft = imgLeftBuf.front()->header.stamp;
+      }
+      lockL.unlock();
+
+      if ((tImLeft-tImDepth) > maxTimeDiff || (tImDepth-tImLeft) > maxTimeDiff)
+        continue;
+
+      if (tImLeft > imuBuf.back()->header.stamp)
+        continue;
+
+      lockL.lock();
+      cv_bridge::CvImageConstPtr cv_ptrLeft;
+      try
+      {
+          cv_ptrLeft = cv_bridge::toCvShare(imgLeftBuf.front());
+      }
+      catch (cv_bridge::Exception& e)
+      {
+          RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
+          return;
+      }
+      imgLeftBuf.pop();
+      lockL.unlock();
+
+      lockD.lock();
+      cv_bridge::CvImageConstPtr cv_ptrRight;
+      try
+      {
+          cv_ptrRight = cv_bridge::toCvShare(imgDepthBuf.front());
+      }
+      catch (cv_bridge::Exception& e)
+      {
+          RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
+          return;
+      }
+      imgDepthBuf.pop();
+      lockD.unlock();
+
+      mpSLAM->TrackRGBD(cv_ptrLeft->image, cv_ptrRight->image, tImLeft.seconds());
+    }
+  }
+}
+
+void ORBSLAM3Subscriber::stereoSLAM()
+{
+  const rclcpp::Duration maxTimeDiff(0, 10000000); // 0.01s
+  while(true)
+  {
+    rclcpp::Time tImLeft(0), tImRight(0);
+    if (!imgLeftBuf.empty() && !imgRightBuf.empty())
+    {
+      tImLeft = imgLeftBuf.front()->header.stamp;
+      tImRight = imgRightBuf.front()->header.stamp;
+
+      std::unique_lock<std::mutex> lockR{mBufMutexRight};
+      while ((tImLeft-tImRight) > maxTimeDiff && imgRightBuf.size() > 1)
+      {
+        imgRightBuf.pop();
+        tImRight = imgRightBuf.front()->header.stamp;
+      }
+      lockR.unlock();
+
+      std::unique_lock<std::mutex> lockL{mBufMutexLeft};
+      while ((tImRight-tImLeft) > maxTimeDiff && imgLeftBuf.size() > 1)
+      {
+        imgLeftBuf.pop();
+        tImLeft = imgLeftBuf.front()->header.stamp;
+      }
+      lockL.unlock();
+
+      if ((tImLeft-tImRight) > maxTimeDiff || (tImRight-tImLeft) > maxTimeDiff)
+        continue;
+
+      if (tImLeft > imuBuf.back()->header.stamp)
+        continue;
+
+      lockL.lock();
+      cv_bridge::CvImageConstPtr cv_ptrLeft;
+      try
+      {
+          cv_ptrLeft = cv_bridge::toCvShare(imgLeftBuf.front());
+      }
+      catch (cv_bridge::Exception& e)
+      {
+          RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
+          return;
+      }
+      imgLeftBuf.pop();
+      lockL.unlock();
+
+      lockR.lock();
+      cv_bridge::CvImageConstPtr cv_ptrRight;
+      try
+      {
+          cv_ptrRight = cv_bridge::toCvShare(imgRightBuf.front());
+      }
+      catch (cv_bridge::Exception& e)
+      {
+          RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
+          return;
+      }
+      imgRightBuf.pop();
+      lockR.unlock();
+
+      mpSLAM->TrackStereo(cv_ptrLeft->image, cv_ptrRight->image, tImLeft.seconds());
+    }
+  }
+}
+
+void ORBSLAM3Subscriber::imuSLAM()
+{
   const rclcpp::Duration maxTimeDiff(0, 10000000); // 0.01s
   while(true)
   {
@@ -153,8 +322,7 @@ void ORBSLAM3Subscriber::runSLAM()
       if (!imuBuf.empty())
       {
         // Load imu measurements from buffer
-        // vImuMeas.clear();
-        
+        vImuMeas.clear();
         while (!imuBuf.empty() && tImLeft >= imuBuf.front()->header.stamp)
         {
           rclcpp::Time t = imuBuf.front()->header.stamp;
@@ -171,24 +339,15 @@ void ORBSLAM3Subscriber::runSLAM()
             tempImuBuf.erase(it);
         }
 
-        // TODO
-        //vImuMeas.push_back(ORB_SLAM3::IMU::Point(cv::Point3f{0.0,0.0,0.0},cv::Point3f{0.0,0.0,0.0},t.seconds()));
+        for (it = tempImuBuf.begin(); it != tempImuBuf.end(); it++)
+          vImuMeas.push_back(ORB_SLAM3::IMU::Point(cv::Point3f(it[0][1], it[0][2], it[0][3]), cv::Point3f(it[0][4], it[0][5], it[0][6]), it[0][0]));
       }
-
       lock.unlock();
 
-      // mpSLAM->TrackStereo(cv_ptrLeft->image, cv_ptrRight->image, tImLeft.seconds(), vImuMeas);
-      if (this->sensorType == ORB_SLAM3::System::STEREO)
-        mpSLAM->TrackStereo(cv_ptrLeft->image, cv_ptrRight->image, tImLeft.seconds());
-      else if (this-sensorType == ORB_SLAM3::System::IMU_STEREO)
+      if (this->sensorType == ORB_SLAM3::System::IMU_STEREO)
         mpSLAM->TrackStereo(cv_ptrLeft->image, cv_ptrRight->image, tImLeft.seconds(), vImuMeas);
-      else if (this->sensorType == ORB_SLAM3::System::RGBD)
-        mpSLAM->TrackRGBD(cv_ptrLeft->image, cv_ptrRight->image, tImLeft.seconds());
-      else if (this->sensorType == ORB_SLAM3::System::IMU_RGBD)
+      else if (this->sensorType == ORB_SLAM3::System::IMU_RGBD) // Not implemented
         mpSLAM->TrackRGBD(cv_ptrLeft->image, cv_ptrRight->image, tImLeft.seconds(), vImuMeas);
-
-      std::chrono::milliseconds tSleep(1);
-      std::this_thread::sleep_for(tSleep);
     }
   }
 }
