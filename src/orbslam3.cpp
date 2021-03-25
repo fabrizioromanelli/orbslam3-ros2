@@ -9,6 +9,9 @@
 #include <cv_bridge/cv_bridge.h>
 #include <opencv2/core/core.hpp>
 #include <ORB_SLAM3/System.h>
+#include <message_filters/subscriber.h>
+#include <message_filters/time_synchronizer.h>
+#include <message_filters/sync_policies/approximate_time.h>
 
 #include "rclcpp/rclcpp.hpp"
 
@@ -35,9 +38,9 @@ public:
       );
     }
 
-    irLeftSubscription_ = this->create_subscription<sensor_msgs::msg::Image>(
-      "/camera/infra1/image_rect_raw", video_qos, std::bind(&ORBSLAM3Subscriber::irLeft_callback, this, _1)
-    );
+    // irLeftSubscription_ = this->create_subscription<sensor_msgs::msg::Image>(
+    //   "/camera/infra1/image_rect_raw", video_qos, std::bind(&ORBSLAM3Subscriber::irLeft_callback, this, _1)
+    // );
 
     if (this->sensorType == ORB_SLAM3::System::STEREO || this->sensorType == ORB_SLAM3::System::IMU_STEREO)
     {
@@ -46,12 +49,12 @@ public:
       );
     }
 
-    if (this->sensorType == ORB_SLAM3::System::RGBD || this->sensorType == ORB_SLAM3::System::IMU_RGBD)
-    {
-      depthSubscription_ = this->create_subscription<sensor_msgs::msg::Image>(
-        "/camera/aligned_depth_to_infra1/image_raw", video_qos, std::bind(&ORBSLAM3Subscriber::depth_callback, this, _1)
-      );
-    }
+    // if (this->sensorType == ORB_SLAM3::System::RGBD || this->sensorType == ORB_SLAM3::System::IMU_RGBD)
+    // {
+    //   depthSubscription_ = this->create_subscription<sensor_msgs::msg::Image>(
+    //     "/camera/aligned_depth_to_infra1/image_raw", video_qos, std::bind(&ORBSLAM3Subscriber::depth_callback, this, _1)
+    //   );
+    // }
   }
 
   void runSLAM();
@@ -124,6 +127,14 @@ void ORBSLAM3Subscriber::runSLAM()
 void ORBSLAM3Subscriber::rgbdSLAM()
 {
   std::cout << "a" << std::endl;
+
+}
+
+
+#if 0
+void ORBSLAM3Subscriber::rgbdSLAM()
+{
+  std::cout << "a" << std::endl;
   const rclcpp::Duration maxTimeDiff(0, 10000000); // 0.01s
   while(true)
   {
@@ -192,6 +203,7 @@ std::cout << "i" << std::endl;
     std::this_thread::sleep_for(tSleep);
   }
 }
+#endif
 
 void ORBSLAM3Subscriber::stereoSLAM()
 {
@@ -360,6 +372,41 @@ void ORBSLAM3Subscriber::imuSLAM()
   }
 }
 
+class ImageGrabber
+{
+public:
+    ImageGrabber(ORB_SLAM3::System* pSLAM):mpSLAM(pSLAM){}
+
+    void GrabRGBD(const sensor_msgs::msg::Image::SharedPtr& msgRGB, const sensor_msgs::msg::Image::SharedPtr& msgD);
+
+    ORB_SLAM3::System* mpSLAM;
+};
+
+void ImageGrabber::GrabRGBD(const sensor_msgs::msg::Image::SharedPtr& msgRGB, const sensor_msgs::msg::Image::SharedPtr& msgD)
+{
+    // Copy the ros image message to cv::Mat.
+    cv_bridge::CvImageConstPtr cv_ptrRGB;
+    try
+    {
+        cv_ptrRGB = cv_bridge::toCvShare(msgRGB);
+    }
+    catch (cv_bridge::Exception& e)
+    {
+        return;
+    }
+
+    cv_bridge::CvImageConstPtr cv_ptrD;
+    try
+    {
+        cv_ptrD = cv_bridge::toCvShare(msgD);
+    }
+    catch (cv_bridge::Exception& e)
+    {
+        return;
+    }
+    mpSLAM->TrackRGBD(cv_ptrRGB->image,cv_ptrD->image,cv_ptrRGB->header.stamp.sec);
+}
+
 enum string_code {
     eStereo,
     eStereoInertial,
@@ -399,10 +446,23 @@ int main(int argc, char * argv[])
   }
 
   ORB_SLAM3::System SLAM(argv[1], argv[2], sensorType, true);
-  auto test = std::make_shared<ORBSLAM3Subscriber>(&SLAM, sensorType);
-  // RCLCPP_INFO_STREAM(test->get_logger(), "pose is " << argv[1] << argv[2] << argv[3] << argv[4] << argv[5] << argv[6]);
-  std::thread sync_thread(&ORBSLAM3Subscriber::runSLAM,&(*test));
+
+  ImageGrabber igb(&SLAM);
+
+  auto test = std::make_shared<rclcpp::Node>("orbslam3_to_realsense_subscriber");
+  message_filters::Subscriber<sensor_msgs::msg::Image> rgb_sub(test.get(), "/camera/infra1/image_rect_raw", rmw_qos_profile_sensor_data);
+  message_filters::Subscriber<sensor_msgs::msg::Image> depth_sub(test.get(), "/camera/aligned_depth_to_infra1/image_raw", rmw_qos_profile_sensor_data);
+  typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::msg::Image, sensor_msgs::msg::Image> sync_pol;
+  message_filters::Synchronizer<sync_pol> sync(sync_pol(10), rgb_sub, depth_sub);
+  sync.registerCallback(&ImageGrabber::GrabRGBD, &igb);
+  // sync.registerCallback(std::bind(&ImageGrabber::GrabRGBD, igb, std::placeholders::_1, std::placeholders::_2));
+
   rclcpp::spin(test);
+
+  // auto test = std::make_shared<ORBSLAM3Subscriber>(&SLAM, sensorType);
+  // RCLCPP_INFO_STREAM(test->get_logger(), "pose is " << argv[1] << argv[2] << argv[3] << argv[4] << argv[5] << argv[6]);
+  // std::thread sync_thread(&ORBSLAM3Subscriber::runSLAM,&(*test));
+  // rclcpp::spin(test);
   rclcpp::shutdown();
   return 0;
 }
