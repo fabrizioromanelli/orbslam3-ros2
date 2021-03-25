@@ -20,8 +20,8 @@ class ORBSLAM3Subscriber : public rclcpp::Node
 {
 public:
 
-  ORBSLAM3Subscriber(ORB_SLAM3::System* pSLAM)
-  : Node("orbslam3_to_realsense_subscriber"), mpSLAM(pSLAM)
+  ORBSLAM3Subscriber(ORB_SLAM3::System* pSLAM, ORB_SLAM3::System::eSensor _sensorType)
+  : Node("orbslam3_to_realsense_subscriber"), mpSLAM(pSLAM), sensorType(_sensorType)
   {
     rclcpp::QoS video_qos(10);
     video_qos.keep_last(10);
@@ -78,6 +78,7 @@ private:
   std::mutex mBufMutexLeft,mBufMutexRight;
 
   ORB_SLAM3::System* mpSLAM;
+  ORB_SLAM3::System::eSensor sensorType;
 };
 
 void ORBSLAM3Subscriber::runSLAM()
@@ -177,7 +178,14 @@ void ORBSLAM3Subscriber::runSLAM()
       lock.unlock();
 
       // mpSLAM->TrackStereo(cv_ptrLeft->image, cv_ptrRight->image, tImLeft.seconds(), vImuMeas);
-      mpSLAM->TrackStereo(cv_ptrLeft->image, cv_ptrRight->image, tImLeft.seconds());
+      if (this->sensorType == ORB_SLAM3::System::STEREO)
+        mpSLAM->TrackStereo(cv_ptrLeft->image, cv_ptrRight->image, tImLeft.seconds());
+      else if (this-sensorType == ORB_SLAM3::System::IMU_STEREO)
+        mpSLAM->TrackStereo(cv_ptrLeft->image, cv_ptrRight->image, tImLeft.seconds(), vImuMeas);
+      else if (this->sensorType == ORB_SLAM3::System::RGBD)
+        mpSLAM->TrackRGBD(cv_ptrLeft->image, cv_ptrRight->image, tImLeft.seconds());
+      else if (this->sensorType == ORB_SLAM3::System::IMU_RGBD)
+        mpSLAM->TrackRGBD(cv_ptrLeft->image, cv_ptrRight->image, tImLeft.seconds(), vImuMeas);
 
       std::chrono::milliseconds tSleep(1);
       std::this_thread::sleep_for(tSleep);
@@ -185,12 +193,46 @@ void ORBSLAM3Subscriber::runSLAM()
   }
 }
 
+enum string_code {
+    eStereo,
+    eStereoInertial,
+    eRGBD,
+    eRGBDInertial
+};
+
+string_code hashit (std::string const& inString) {
+    if (inString == "STEREO") return eStereo;
+    if (inString == "STEREO-INERTIAL") return eStereoInertial;
+    if (inString == "RGBD") return eRGBD;
+    if (inString == "RGBD-INERTIAL") return eRGBDInertial;
+    return eStereo;
+}
+
 int main(int argc, char * argv[])
 {
   rclcpp::init(argc, argv);
 
-  ORB_SLAM3::System SLAM(argv[1], argv[2], ORB_SLAM3::System::STEREO, true);
-  auto test = std::make_shared<ORBSLAM3Subscriber>(&SLAM);
+  ORB_SLAM3::System::eSensor sensorType;
+  switch (hashit(argv[3]))
+  {
+    case eStereo:
+      sensorType = ORB_SLAM3::System::STEREO;
+      break;
+    case eStereoInertial:
+      sensorType = ORB_SLAM3::System::IMU_STEREO;
+      break;
+    case eRGBD:
+      sensorType = ORB_SLAM3::System::RGBD;
+      break;
+    case eRGBDInertial:
+      sensorType = ORB_SLAM3::System::IMU_RGBD;
+      break;
+    default:
+      break;
+  }
+
+  ORB_SLAM3::System SLAM(argv[1], argv[2], sensorType, true);
+  auto test = std::make_shared<ORBSLAM3Subscriber>(&SLAM, sensorType);
   // RCLCPP_INFO_STREAM(test->get_logger(), "pose is " << argv[1] << argv[2] << argv[3] << argv[4] << argv[5] << argv[6]);
   std::thread sync_thread(&ORBSLAM3Subscriber::runSLAM,&(*test));
   rclcpp::spin(test);

@@ -8,7 +8,8 @@ def generate_launch_description():
         executable="orbslam3",
         arguments=[
             "/usr/local/share/ORB_SLAM3/Vocabulary/ORBvoc.txt",
-            "/usr/local/share/ORB_SLAM3/Config/RealSense-D435i-IR-stereo.yaml"
+            "/usr/local/share/ORB_SLAM3/Config/RealSense-D435i-IRD-inertial.yaml",
+            "RGBD-INERTIAL"
         ]
     )
     ])
