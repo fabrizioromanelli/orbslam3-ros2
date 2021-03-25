@@ -6,6 +6,7 @@
 #include <chrono>
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/image.hpp>
+#include <cv_bridge/cv_bridge.h>
 #include <opencv2/core/core.hpp>
 #include <ORB_SLAM3/System.h>
 
@@ -18,6 +19,7 @@ using std::placeholders::_1;
 class ORBSLAM3Subscriber : public rclcpp::Node
 {
 public:
+
   ORBSLAM3Subscriber(ORB_SLAM3::System* pSLAM)
   : Node("orbslam3_to_realsense_subscriber"), mpSLAM(pSLAM)
   {
@@ -84,7 +86,6 @@ void ORBSLAM3Subscriber::runSLAM()
   const rclcpp::Duration maxTimeDiff(0, 10000000); // 0.01s
   while(true)
   {
-    cv::Mat imLeft, imRight;
     rclcpp::Time tImLeft(0), tImRight(0);
     if (!imgLeftBuf.empty() && !imgRightBuf.empty() && !imuBuf.empty())
     {
@@ -116,12 +117,30 @@ void ORBSLAM3Subscriber::runSLAM()
         continue;
 
       lockL.lock();
-      // imLeft = GetImage(imgLeftBuf.front());
+      cv_bridge::CvImageConstPtr cv_ptrLeft;
+      try
+      {
+          cv_ptrLeft = cv_bridge::toCvShare(imgLeftBuf.front());
+      }
+      catch (cv_bridge::Exception& e)
+      {
+          RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
+          return;
+      }
       imgLeftBuf.pop();
       lockL.unlock();
 
       lockR.lock();
-      // imRight = GetImage(imgRightBuf.front());
+      cv_bridge::CvImageConstPtr cv_ptrRight;
+      try
+      {
+          cv_ptrRight = cv_bridge::toCvShare(imgRightBuf.front());
+      }
+      catch (cv_bridge::Exception& e)
+      {
+          RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
+          return;
+      }
       imgRightBuf.pop();
       lockR.unlock();
 
@@ -133,7 +152,7 @@ void ORBSLAM3Subscriber::runSLAM()
       if (!imuBuf.empty())
       {
         // Load imu measurements from buffer
-        vImuMeas.clear();
+        // vImuMeas.clear();
         
         while (!imuBuf.empty() && tImLeft >= imuBuf.front()->header.stamp)
         {
@@ -151,12 +170,14 @@ void ORBSLAM3Subscriber::runSLAM()
             tempImuBuf.erase(it);
         }
 
-        vImuMeas.push_back(ORB_SLAM3::IMU::Point(cv::Point3f{0.0,0.0,0.0},cv::Point3f{0.0,0.0,0.0},tImLeft.seconds()));
+        // TODO
+        //vImuMeas.push_back(ORB_SLAM3::IMU::Point(cv::Point3f{0.0,0.0,0.0},cv::Point3f{0.0,0.0,0.0},t.seconds()));
       }
 
       lock.unlock();
 
-      // mpSLAM->TrackStereo(imLeft,imRight,tImLeft,vImuMeas);
+      // mpSLAM->TrackStereo(cv_ptrLeft->image, cv_ptrRight->image, tImLeft.seconds(), vImuMeas);
+      mpSLAM->TrackStereo(cv_ptrLeft->image, cv_ptrRight->image, tImLeft.seconds());
 
       std::chrono::milliseconds tSleep(1);
       std::this_thread::sleep_for(tSleep);
@@ -166,9 +187,11 @@ void ORBSLAM3Subscriber::runSLAM()
 
 int main(int argc, char * argv[])
 {
-  ORB_SLAM3::System SLAM("", "", ORB_SLAM3::System::IMU_STEREO, true);
   rclcpp::init(argc, argv);
+
+  ORB_SLAM3::System SLAM(argv[1], argv[2], ORB_SLAM3::System::STEREO, true);
   auto test = std::make_shared<ORBSLAM3Subscriber>(&SLAM);
+  // RCLCPP_INFO_STREAM(test->get_logger(), "pose is " << argv[1] << argv[2] << argv[3] << argv[4] << argv[5] << argv[6]);
   std::thread sync_thread(&ORBSLAM3Subscriber::runSLAM,&(*test));
   rclcpp::spin(test);
   rclcpp::shutdown();

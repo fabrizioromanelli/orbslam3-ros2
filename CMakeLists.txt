@@ -33,6 +33,11 @@ ament_target_dependencies(orbslam3 rclcpp std_msgs sensor_msgs realsense2_camera
 
 target_link_libraries(orbslam3 ${LIBS})
 
+install(DIRECTORY 
+    launch
+    DESTINATION share/${PROJECT_NAME}
+    )
+
 install(TARGETS
   orbslam3
   DESTINATION lib/${PROJECT_NAME})
