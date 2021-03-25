@@ -1,4 +1,4 @@
-#include <functional>
+  #include <functional>
 #include <queue>
 #include <thread>
 #include <mutex>
@@ -38,18 +38,21 @@ public:
       );
     }
 
-    // irLeftSubscription_ = this->create_subscription<sensor_msgs::msg::Image>(
-    //   "/camera/infra1/image_rect_raw", video_qos, std::bind(&ORBSLAM3Subscriber::irLeft_callback, this, _1)
-    // );
+    if (sensorType != ORB_SLAM3::System::STEREO && sensorType != ORB_SLAM3::System::RGBD)
+    {
+      irLeftSubscription_ = this->create_subscription<sensor_msgs::msg::Image>(
+        "/camera/infra1/image_rect_raw", video_qos, std::bind(&ORBSLAM3Subscriber::irLeft_callback, this, _1)
+      );
+    }
 
-    if (this->sensorType == ORB_SLAM3::System::STEREO || this->sensorType == ORB_SLAM3::System::IMU_STEREO)
+    if (this->sensorType == ORB_SLAM3::System::IMU_STEREO)
     {
       irRightSubscription_ = this->create_subscription<sensor_msgs::msg::Image>(
         "/camera/infra2/image_rect_raw", video_qos, std::bind(&ORBSLAM3Subscriber::irRight_callback, this, _1)
       );
     }
 
-    // if (this->sensorType == ORB_SLAM3::System::RGBD || this->sensorType == ORB_SLAM3::System::IMU_RGBD)
+    // if (this->sensorType == ORB_SLAM3::System::IMU_RGBD)
     // {
     //   depthSubscription_ = this->create_subscription<sensor_msgs::msg::Image>(
     //     "/camera/aligned_depth_to_infra1/image_raw", video_qos, std::bind(&ORBSLAM3Subscriber::depth_callback, this, _1)
@@ -83,32 +86,21 @@ private:
     imgRightBuf.push(msg);
   }
 
-  void depth_callback(const sensor_msgs::msg::Image::SharedPtr msg)
-  {
-    std::lock_guard<std::mutex> lock{mBufMutexDepth};
-    std::cout << "depth" << std::endl;
-    if (!imgDepthBuf.empty())
-      imgDepthBuf.pop();
-    imgDepthBuf.push(msg);
-  }
-
   void imuSLAM();
-  void stereoSLAM();
-  void rgbdSLAM();
 
   // Subscriptions
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imuSubscription_;
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr irLeftSubscription_;
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr irRightSubscription_;
-  rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr depthSubscription_;
+  // rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr depthSubscription_;
 
   // Queues
   std::queue<sensor_msgs::msg::Imu::SharedPtr> imuBuf;
-  std::queue<sensor_msgs::msg::Image::SharedPtr> imgLeftBuf, imgRightBuf, imgDepthBuf;
+  std::queue<sensor_msgs::msg::Image::SharedPtr> imgLeftBuf, imgRightBuf;
 
   // Mutex
   std::mutex mBufMutex;
-  std::mutex mBufMutexLeft, mBufMutexRight, mBufMutexDepth;
+  std::mutex mBufMutexLeft, mBufMutexRight;
 
   ORB_SLAM3::System* mpSLAM;
   ORB_SLAM3::System::eSensor sensorType;
@@ -118,157 +110,6 @@ void ORBSLAM3Subscriber::runSLAM()
 {
   if (this->sensorType == ORB_SLAM3::System::IMU_STEREO || this->sensorType == ORB_SLAM3::System::IMU_RGBD)
     imuSLAM();
-  else if (this->sensorType == ORB_SLAM3::System::STEREO)
-    stereoSLAM();
-  else if (this->sensorType == ORB_SLAM3::System::RGBD)
-    rgbdSLAM();
-}
-
-void ORBSLAM3Subscriber::rgbdSLAM()
-{
-  std::cout << "a" << std::endl;
-
-}
-
-
-#if 0
-void ORBSLAM3Subscriber::rgbdSLAM()
-{
-  std::cout << "a" << std::endl;
-  const rclcpp::Duration maxTimeDiff(0, 10000000); // 0.01s
-  while(true)
-  {
-    std::cout << "b" << std::endl;
-    rclcpp::Time tImLeft(0), tImDepth(0);
-    if (!imgLeftBuf.empty() && !imgDepthBuf.empty())
-    {
-      std::cout << "c" << std::endl;
-      tImLeft = imgLeftBuf.front()->header.stamp;
-      tImDepth = imgDepthBuf.front()->header.stamp;
-
-      std::unique_lock<std::mutex> lockD{mBufMutexDepth};
-      while ((tImLeft-tImDepth) > maxTimeDiff && imgDepthBuf.size() > 1)
-      {
-        imgDepthBuf.pop();
-        tImDepth = imgDepthBuf.front()->header.stamp;
-      }
-      lockD.unlock();
-std::cout << "d" << std::endl;
-      std::unique_lock<std::mutex> lockL{mBufMutexLeft};
-      while ((tImDepth-tImLeft) > maxTimeDiff && imgLeftBuf.size() > 1)
-      {
-        imgLeftBuf.pop();
-        tImLeft = imgLeftBuf.front()->header.stamp;
-      }
-      lockL.unlock();
-std::cout << "e" << std::endl;
-      if ((tImLeft-tImDepth) > maxTimeDiff || (tImDepth-tImLeft) > maxTimeDiff)
-        continue;
-std::cout << "f" << std::endl;
-      if (tImLeft > imuBuf.back()->header.stamp)
-        continue;
-std::cout << "g" << std::endl;
-      lockL.lock();
-      cv_bridge::CvImageConstPtr cv_ptrLeft;
-      try
-      {
-          cv_ptrLeft = cv_bridge::toCvShare(imgLeftBuf.front());
-      }
-      catch (cv_bridge::Exception& e)
-      {
-          RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
-          return;
-      }
-      imgLeftBuf.pop();
-      lockL.unlock();
-std::cout << "h" << std::endl;
-      lockD.lock();
-      cv_bridge::CvImageConstPtr cv_ptrRight;
-      try
-      {
-          cv_ptrRight = cv_bridge::toCvShare(imgDepthBuf.front());
-      }
-      catch (cv_bridge::Exception& e)
-      {
-          RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
-          return;
-      }
-      imgDepthBuf.pop();
-      lockD.unlock();
-std::cout << "i" << std::endl;
-      mpSLAM->TrackRGBD(cv_ptrLeft->image, cv_ptrRight->image, tImLeft.seconds());
-    }
-
-    std::chrono::milliseconds tSleep(1);
-    std::this_thread::sleep_for(tSleep);
-  }
-}
-#endif
-
-void ORBSLAM3Subscriber::stereoSLAM()
-{
-  const rclcpp::Duration maxTimeDiff(0, 10000000); // 0.01s
-  while(true)
-  {
-    rclcpp::Time tImLeft(0), tImRight(0);
-    if (!imgLeftBuf.empty() && !imgRightBuf.empty())
-    {
-      tImLeft = imgLeftBuf.front()->header.stamp;
-      tImRight = imgRightBuf.front()->header.stamp;
-
-      std::unique_lock<std::mutex> lockR{mBufMutexRight};
-      while ((tImLeft-tImRight) > maxTimeDiff && imgRightBuf.size() > 1)
-      {
-        imgRightBuf.pop();
-        tImRight = imgRightBuf.front()->header.stamp;
-      }
-      lockR.unlock();
-
-      std::unique_lock<std::mutex> lockL{mBufMutexLeft};
-      while ((tImRight-tImLeft) > maxTimeDiff && imgLeftBuf.size() > 1)
-      {
-        imgLeftBuf.pop();
-        tImLeft = imgLeftBuf.front()->header.stamp;
-      }
-      lockL.unlock();
-
-      if ((tImLeft-tImRight) > maxTimeDiff || (tImRight-tImLeft) > maxTimeDiff)
-        continue;
-
-      if (tImLeft > imuBuf.back()->header.stamp)
-        continue;
-
-      lockL.lock();
-      cv_bridge::CvImageConstPtr cv_ptrLeft;
-      try
-      {
-          cv_ptrLeft = cv_bridge::toCvShare(imgLeftBuf.front());
-      }
-      catch (cv_bridge::Exception& e)
-      {
-          RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
-          return;
-      }
-      imgLeftBuf.pop();
-      lockL.unlock();
-
-      lockR.lock();
-      cv_bridge::CvImageConstPtr cv_ptrRight;
-      try
-      {
-          cv_ptrRight = cv_bridge::toCvShare(imgRightBuf.front());
-      }
-      catch (cv_bridge::Exception& e)
-      {
-          RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
-          return;
-      }
-      imgRightBuf.pop();
-      lockR.unlock();
-
-      mpSLAM->TrackStereo(cv_ptrLeft->image, cv_ptrRight->image, tImLeft.seconds());
-    }
-  }
 }
 
 void ORBSLAM3Subscriber::imuSLAM()
@@ -378,6 +219,7 @@ public:
     ImageGrabber(ORB_SLAM3::System* pSLAM):mpSLAM(pSLAM){}
 
     void GrabRGBD(const sensor_msgs::msg::Image::SharedPtr& msgRGB, const sensor_msgs::msg::Image::SharedPtr& msgD);
+    void GrabStereo(const sensor_msgs::msg::Image::SharedPtr& msgLeft, const sensor_msgs::msg::Image::SharedPtr& msgRight);
 
     ORB_SLAM3::System* mpSLAM;
 };
@@ -404,14 +246,44 @@ void ImageGrabber::GrabRGBD(const sensor_msgs::msg::Image::SharedPtr& msgRGB, co
     {
         return;
     }
-    mpSLAM->TrackRGBD(cv_ptrRGB->image,cv_ptrD->image,cv_ptrRGB->header.stamp.sec);
+
+    rclcpp::Time Ts = cv_ptrRGB->header.stamp;
+    mpSLAM->TrackRGBD(cv_ptrRGB->image, cv_ptrD->image, Ts.seconds());
+}
+
+void ImageGrabber::GrabStereo(const sensor_msgs::msg::Image::SharedPtr& msgLeft, const sensor_msgs::msg::Image::SharedPtr& msgRight)
+{
+    // Copy the ros image message to cv::Mat.
+    cv_bridge::CvImageConstPtr cv_ptrLeft;
+    try
+    {
+        cv_ptrLeft = cv_bridge::toCvShare(msgLeft);
+    }
+    catch (cv_bridge::Exception& e)
+    {
+        return;
+    }
+
+    cv_bridge::CvImageConstPtr cv_ptrRight;
+    try
+    {
+        cv_ptrRight = cv_bridge::toCvShare(msgRight);
+    }
+    catch (cv_bridge::Exception& e)
+    {
+        return;
+    }
+
+    rclcpp::Time Ts = cv_ptrLeft->header.stamp;
+    mpSLAM->TrackStereo(cv_ptrLeft->image, cv_ptrRight->image, Ts.seconds());
 }
 
 enum string_code {
     eStereo,
     eStereoInertial,
     eRGBD,
-    eRGBDInertial
+    eRGBDInertial,
+    eIRD
 };
 
 string_code hashit (std::string const& inString) {
@@ -419,6 +291,7 @@ string_code hashit (std::string const& inString) {
     if (inString == "STEREO-INERTIAL") return eStereoInertial;
     if (inString == "RGBD") return eRGBD;
     if (inString == "RGBD-INERTIAL") return eRGBDInertial;
+    if (inString == "IRD") return eIRD;
     return eStereo;
 }
 
@@ -426,6 +299,7 @@ int main(int argc, char * argv[])
 {
   rclcpp::init(argc, argv);
 
+  bool irDepth = false;
   ORB_SLAM3::System::eSensor sensorType;
   switch (hashit(argv[3]))
   {
@@ -435,6 +309,8 @@ int main(int argc, char * argv[])
     case eStereoInertial:
       sensorType = ORB_SLAM3::System::IMU_STEREO;
       break;
+    case eIRD:
+      irDepth = true;
     case eRGBD:
       sensorType = ORB_SLAM3::System::RGBD;
       break;
@@ -446,23 +322,43 @@ int main(int argc, char * argv[])
   }
 
   ORB_SLAM3::System SLAM(argv[1], argv[2], sensorType, true);
+  auto nodePtr = std::make_shared<ORBSLAM3Subscriber>(&SLAM, sensorType);
 
   ImageGrabber igb(&SLAM);
+  std::string s1, s2;
 
-  auto test = std::make_shared<rclcpp::Node>("orbslam3_to_realsense_subscriber");
-  message_filters::Subscriber<sensor_msgs::msg::Image> rgb_sub(test.get(), "/camera/infra1/image_rect_raw", rmw_qos_profile_sensor_data);
-  message_filters::Subscriber<sensor_msgs::msg::Image> depth_sub(test.get(), "/camera/aligned_depth_to_infra1/image_raw", rmw_qos_profile_sensor_data);
+  if (sensorType == ORB_SLAM3::System::RGBD)
+  {
+    if (irDepth)
+    {
+      s1 = "/camera/infra1/image_rect_raw";
+      s2 = "/camera/aligned_depth_to_infra1/image_raw";
+    }
+    else
+    {
+      s1 = "/camera/color/image_raw";
+      s2 = "/camera/aligned_depth_to_color/image_raw";
+    }
+  }
+  else if (sensorType == ORB_SLAM3::System::STEREO)
+  {
+      s1 = "/camera/infra1/image_rect_raw";
+      s2 = "/camera/infra2/image_rect_raw";
+  }
+
+  message_filters::Subscriber<sensor_msgs::msg::Image> stream1_sub(nodePtr.get(), s1, rmw_qos_profile_sensor_data);
+  message_filters::Subscriber<sensor_msgs::msg::Image> stream2_sub(nodePtr.get(), s2, rmw_qos_profile_sensor_data);
   typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::msg::Image, sensor_msgs::msg::Image> sync_pol;
-  message_filters::Synchronizer<sync_pol> sync(sync_pol(10), rgb_sub, depth_sub);
-  sync.registerCallback(&ImageGrabber::GrabRGBD, &igb);
-  // sync.registerCallback(std::bind(&ImageGrabber::GrabRGBD, igb, std::placeholders::_1, std::placeholders::_2));
+  message_filters::Synchronizer<sync_pol> sync(sync_pol(10), stream1_sub, stream2_sub);
 
-  rclcpp::spin(test);
+  if (sensorType == ORB_SLAM3::System::RGBD)
+    sync.registerCallback(&ImageGrabber::GrabRGBD, &igb);
+  else if (sensorType == ORB_SLAM3::System::STEREO)
+    sync.registerCallback(&ImageGrabber::GrabStereo, &igb);
+  else if (sensorType == ORB_SLAM3::System::IMU_STEREO || sensorType == ORB_SLAM3::System::IMU_RGBD)
+    std::thread sync_thread(&ORBSLAM3Subscriber::runSLAM,&(*nodePtr));
 
-  // auto test = std::make_shared<ORBSLAM3Subscriber>(&SLAM, sensorType);
-  // RCLCPP_INFO_STREAM(test->get_logger(), "pose is " << argv[1] << argv[2] << argv[3] << argv[4] << argv[5] << argv[6]);
-  // std::thread sync_thread(&ORBSLAM3Subscriber::runSLAM,&(*test));
-  // rclcpp::spin(test);
+  rclcpp::spin(nodePtr);
   rclcpp::shutdown();
   return 0;
 }
