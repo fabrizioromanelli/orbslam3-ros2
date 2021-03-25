@@ -10,6 +10,8 @@
 
 #include "rclcpp/rclcpp.hpp"
 
+#define MAX_IMU_BUFFER 7
+
 using std::placeholders::_1;
 
 class ORBSLAM3Subscriber : public rclcpp::Node
@@ -41,7 +43,6 @@ private:
   {
     std::lock_guard<std::mutex> guard{mBufMutex};
     imuBuf.push(msg);
-    // std::cout << msg->header.stamp.sec << msg->header.stamp.nanosec << " " << msg->linear_acceleration.x << " " << msg->linear_acceleration.y << " " << msg->linear_acceleration.z << " " << msg->angular_velocity.x << " " << msg->angular_velocity.y << " " << msg->angular_velocity.z << std::endl;
   }
 
   void irLeft_callback(const sensor_msgs::msg::Image::SharedPtr msg)
@@ -50,7 +51,6 @@ private:
     if (!imgLeftBuf.empty())
       imgLeftBuf.pop();
     imgLeftBuf.push(msg);
-    // std::cout << "L " << msg->header.stamp.sec << msg->header.stamp.nanosec << " " << msg->width << " " << msg->height << std::endl;
   }
 
   void irRight_callback(const sensor_msgs::msg::Image::SharedPtr msg)
@@ -59,7 +59,6 @@ private:
     if (!imgRightBuf.empty())
       imgRightBuf.pop();
     imgRightBuf.push(msg);
-    // std::cout << "R " << msg->header.stamp.sec << msg->header.stamp.nanosec << " " << msg->width << " " << msg->height << std::endl;
   }
 
   // Subscriptions
@@ -107,7 +106,6 @@ void ORBSLAM3Subscriber::runSLAM()
 
       if ((tImLeft-tImRight) > maxTimeDiff || (tImRight-tImLeft) > maxTimeDiff)
       {
-        // std::cout << "big time difference" << std::endl;
         continue;
       }
 
@@ -116,49 +114,47 @@ void ORBSLAM3Subscriber::runSLAM()
 
       lockL.lock();
       // imLeft = GetImage(imgLeftBuf.front());
-      std::cout << imgLeftBuf.front()->header.stamp.sec << "." << imgLeftBuf.front()->header.stamp.nanosec << std::endl << std::flush;
       imgLeftBuf.pop();
       lockL.unlock();
 
       lockR.lock();
       // imRight = GetImage(imgRightBuf.front());
-      std::cout << imgRightBuf.front()->header.stamp.sec << "." << imgRightBuf.front()->header.stamp.nanosec << std::endl << std::flush;
       imgRightBuf.pop();
       lockR.unlock();
 
+      std::vector<std::vector<double>> tempImuBuf;
+      std::vector<std::vector<double>>::iterator it;
+
       // vector<ORB_SLAM3::IMU::Point> vImuMeas;
-      // this->mBufMutex.lock();
       std::unique_lock<std::mutex> lock{mBufMutex};
       if (!imuBuf.empty())
       {
         // Load imu measurements from buffer
         // vImuMeas.clear();
+        
         while (!imuBuf.empty() && tImLeft >= imuBuf.front()->header.stamp)
         {
-          // std::cout << "S: " << tImLeft.seconds() << " HS: " << imuBuf.front()->header.stamp.sec << "." << imuBuf.front()->header.stamp.nanosec << std::endl << std::flush;
           rclcpp::Time t = imuBuf.front()->header.stamp;
-          // std::cout << "aaaa" << std::endl << std::flush;
           cv::Point3f acc(imuBuf.front()->linear_acceleration.x, imuBuf.front()->linear_acceleration.y, imuBuf.front()->linear_acceleration.z);
-          // std::cout << "bbbb" << std::endl << std::flush;
           cv::Point3f gyr(imuBuf.front()->angular_velocity.x, imuBuf.front()->angular_velocity.y, imuBuf.front()->angular_velocity.z);
-          // std::cout << "cccc" << std::endl << std::flush;
           // vImuMeas.push_back(ORB_SLAM3::IMU::Point(acc,gyr,t));
-          std::cout << t.seconds() << " " << acc.x << " " << acc.y << " " << acc.z << " " << gyr.x << " " << gyr.y << " " << gyr.z << " " << std::endl << std::flush;
-          // std::cout << "imuBuf.size()" << imuBuf.size() << std::endl << std::flush;
+          tempImuBuf.push_back(std::vector<double>{t.seconds(),imuBuf.front()->linear_acceleration.x, imuBuf.front()->linear_acceleration.y, imuBuf.front()->linear_acceleration.z,imuBuf.front()->angular_velocity.x, imuBuf.front()->angular_velocity.y, imuBuf.front()->angular_velocity.z});
           imuBuf.pop();
-          // std::cout << "post pop()" << std::endl << std::flush;
+        }
+
+        if (tempImuBuf.size() > MAX_IMU_BUFFER)
+        {
+          int i = tempImuBuf.size() - MAX_IMU_BUFFER;
+          for (it = tempImuBuf.begin(); it != tempImuBuf.end(), i > 0; i--)
+          {
+            tempImuBuf.erase(it);
+          }
         }
       }
-      // std::cout << "H1" << std::endl << std::flush;
+
       lock.unlock();
-      // if(mbClahe)
-      // {
-      //   mClahe->apply(imLeft,imLeft);
-      //   mClahe->apply(imRight,imRight);
-      // }
 
       // mpSLAM->TrackStereo(imLeft,imRight,tImLeft,vImuMeas);
-      // std::cout << "H" << std::endl << std::flush;
 
       std::chrono::milliseconds tSleep(1);
       std::this_thread::sleep_for(tSleep);
