@@ -7,6 +7,7 @@
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <opencv2/core/core.hpp>
+#include <ORB_SLAM3/System.h>
 
 #include "rclcpp/rclcpp.hpp"
 
@@ -17,8 +18,8 @@ using std::placeholders::_1;
 class ORBSLAM3Subscriber : public rclcpp::Node
 {
 public:
-  ORBSLAM3Subscriber()
-  : Node("orbslam3_to_realsense_subscriber")
+  ORBSLAM3Subscriber(ORB_SLAM3::System* pSLAM)
+  : Node("orbslam3_to_realsense_subscriber"), mpSLAM(pSLAM)
   {
     rclcpp::QoS video_qos(10);
     video_qos.keep_last(10);
@@ -73,6 +74,8 @@ private:
   // Mutex
   std::mutex mBufMutex;
   std::mutex mBufMutexLeft,mBufMutexRight;
+
+  ORB_SLAM3::System* mpSLAM;
 };
 
 void ORBSLAM3Subscriber::runSLAM()
@@ -125,19 +128,18 @@ void ORBSLAM3Subscriber::runSLAM()
       std::vector<std::vector<double>> tempImuBuf;
       std::vector<std::vector<double>>::iterator it;
 
-      // vector<ORB_SLAM3::IMU::Point> vImuMeas;
+      vector<ORB_SLAM3::IMU::Point> vImuMeas;
       std::unique_lock<std::mutex> lock{mBufMutex};
       if (!imuBuf.empty())
       {
         // Load imu measurements from buffer
-        // vImuMeas.clear();
+        vImuMeas.clear();
         
         while (!imuBuf.empty() && tImLeft >= imuBuf.front()->header.stamp)
         {
           rclcpp::Time t = imuBuf.front()->header.stamp;
           cv::Point3f acc(imuBuf.front()->linear_acceleration.x, imuBuf.front()->linear_acceleration.y, imuBuf.front()->linear_acceleration.z);
           cv::Point3f gyr(imuBuf.front()->angular_velocity.x, imuBuf.front()->angular_velocity.y, imuBuf.front()->angular_velocity.z);
-          // vImuMeas.push_back(ORB_SLAM3::IMU::Point(acc,gyr,t));
           tempImuBuf.push_back(std::vector<double>{t.seconds(),imuBuf.front()->linear_acceleration.x, imuBuf.front()->linear_acceleration.y, imuBuf.front()->linear_acceleration.z,imuBuf.front()->angular_velocity.x, imuBuf.front()->angular_velocity.y, imuBuf.front()->angular_velocity.z});
           imuBuf.pop();
         }
@@ -146,10 +148,10 @@ void ORBSLAM3Subscriber::runSLAM()
         {
           int i = tempImuBuf.size() - MAX_IMU_BUFFER;
           for (it = tempImuBuf.begin(); it != tempImuBuf.end(), i > 0; i--)
-          {
             tempImuBuf.erase(it);
-          }
         }
+
+        vImuMeas.push_back(ORB_SLAM3::IMU::Point(cv::Point3f{0.0,0.0,0.0},cv::Point3f{0.0,0.0,0.0},tImLeft.seconds()));
       }
 
       lock.unlock();
@@ -164,8 +166,9 @@ void ORBSLAM3Subscriber::runSLAM()
 
 int main(int argc, char * argv[])
 {
+  ORB_SLAM3::System SLAM("", "", ORB_SLAM3::System::IMU_STEREO, true);
   rclcpp::init(argc, argv);
-  auto test = std::make_shared<ORBSLAM3Subscriber>();
+  auto test = std::make_shared<ORBSLAM3Subscriber>(&SLAM);
   std::thread sync_thread(&ORBSLAM3Subscriber::runSLAM,&(*test));
   rclcpp::spin(test);
   rclcpp::shutdown();

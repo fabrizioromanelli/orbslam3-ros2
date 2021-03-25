@@ -17,9 +17,21 @@ find_package(sensor_msgs REQUIRED)
 find_package(realsense2_camera_msgs REQUIRED)
 find_package(realsense2_description REQUIRED)
 find_package(realsense2_camera REQUIRED)
+find_package(eigen3_cmake_module REQUIRED)
+find_package(Eigen3 3.1.0 REQUIRED)
+find_package(Pangolin REQUIRED)
+
+set(LIBS 
+-lDBoW2
+-lg2o
+-lORB_SLAM3
+-lboost_system
+)
 
 add_executable(orbslam3 src/orbslam3.cpp)
-ament_target_dependencies(orbslam3 rclcpp std_msgs sensor_msgs realsense2_camera_msgs realsense2_description realsense2_camera)
+ament_target_dependencies(orbslam3 rclcpp std_msgs sensor_msgs realsense2_camera_msgs realsense2_description realsense2_camera Eigen3 Pangolin)
+
+target_link_libraries(orbslam3 ${LIBS})
 
 install(TARGETS
   orbslam3
